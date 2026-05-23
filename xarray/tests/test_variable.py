@@ -1806,6 +1806,48 @@ class TestVariable(VariableSubclassobjects):
 
         assert_identical(actual, expected)
 
+    def test_unstack_once_fast_path_matches_scatter(self):
+        # The reshape fast path inside _unstack_once must produce the same
+        # result as the scatter-write fallback. We exercise both by giving
+        # _unstack_once a lex-sorted MultiIndex (fast path) and a permuted
+        # one (fallback), and check the results are equivalent up to row
+        # reordering.
+        nx, ny, nz = 4, 5, 3
+        data = np.arange(nx * ny * nz, dtype=np.float64).reshape(nz, nx * ny)
+        v = Variable(["z", "xy"], data)
+
+        sorted_index = pd.MultiIndex.from_product(
+            [range(nx), range(ny)], names=("x", "y")
+        )
+        # Permuted: shuffle the tuples — should NOT hit the fast path.
+        permutation = np.array([3, 0, 5, 9, 1, 16, 2, 7, 11, 4, 6, 8, 10, 19, 12, 14, 13, 15, 17, 18])
+        permuted_index = sorted_index[permutation]
+        # Permute the data along the stacked dim the same way so the unstacked
+        # results should match.
+        v_permuted = Variable(["z", "xy"], data[:, permutation])
+
+        fast = v._unstack_once(sorted_index, "xy")
+        fallback = v_permuted._unstack_once(permuted_index, "xy")
+
+        assert fast.dims == ("z", "x", "y") == fallback.dims
+        assert fast.shape == fallback.shape
+        np.testing.assert_array_equal(fast.data, fallback.data)
+
+    def test_unstack_once_with_missing_combinations_uses_fallback(self):
+        # MultiIndex with a missing combination must go through the scatter
+        # path and fill the missing slot with NaN.
+        v = Variable(["z"], np.array([10.0, 20.0, 30.0]))
+        # 2 x 2 grid but only 3 combinations present — (1, 1) is missing.
+        index = pd.MultiIndex.from_tuples(
+            [(0, 0), (0, 1), (1, 0)], names=("x", "y")
+        )
+        result = v._unstack_once(index, "z")
+        assert result.shape == (2, 2)
+        assert result.data[0, 0] == 10.0
+        assert result.data[0, 1] == 20.0
+        assert result.data[1, 0] == 30.0
+        assert np.isnan(result.data[1, 1])
+
     def test_broadcasting_math(self):
         x = np.random.randn(2, 3)
         v = Variable(["a", "b"], x)

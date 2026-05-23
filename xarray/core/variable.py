@@ -1619,9 +1619,10 @@ class Variable(NamedArray, AbstractArray, VariableArithmetic):
         new_shape = tuple(list(reordered.shape[: len(other_dims)]) + new_dim_sizes)
         new_dims = reordered.dims[: len(other_dims)] + tuple(new_dim_names)
 
+        is_missing_values = math.prod(new_shape) > math.prod(self.shape)
+
         create_template: Callable
         if fill_value is dtypes.NA:
-            is_missing_values = math.prod(new_shape) > math.prod(self.shape)
             if is_missing_values:
                 dtype, fill_value = dtypes.maybe_promote(self.dtype)
 
@@ -1655,6 +1656,13 @@ class Variable(NamedArray, AbstractArray, VariableArithmetic):
                 shape=new_shape,
                 sorted=index.is_monotonic_increasing,
             )
+
+        elif not is_missing_values and index.is_monotonic_increasing:
+            # Fast path: a lex-sorted MultiIndex with no missing combinations
+            # (the typical .stack().unstack() round trip) has codes in
+            # row-major order, so reshape produces the same array as the
+            # scatter-write below with no per-element indexing cost.
+            data = reordered.data.reshape(new_shape)
 
         else:
             data = create_template(self.data, shape=new_shape, dtype=dtype)
