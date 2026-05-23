@@ -71,6 +71,36 @@ class GroupByDask(GroupBy):
         self.ds2d_mean = self.ds2d.groupby("b").mean().compute()
 
 
+class GroupByHighCardinality:
+    """Realistic many-rows, many-groups setup — exercises _codes_to_group_indices."""
+
+    def setup(self, *args, **kwargs):
+        n_rows = 200_000
+        n_groups = 1000
+        per_group = n_rows // n_groups
+        # Sorted (monotonic) labels: representative of groupby on time components
+        # or sorted-coordinate groupby, which is the dominant real-world pattern.
+        self.ds_sorted = xr.Dataset(
+            {"data": ("d", np.random.default_rng(0).standard_normal(n_rows))},
+            coords={"label": ("d", np.repeat(np.arange(n_groups), per_group))},
+        )
+        # Shuffled labels: representative of categorical groupby in unsorted data.
+        rng = np.random.default_rng(0)
+        shuffled = rng.permutation(np.repeat(np.arange(n_groups), per_group))
+        self.ds_shuffled = xr.Dataset(
+            {"data": ("d", rng.standard_normal(n_rows))},
+            coords={"label": ("d", shuffled)},
+        )
+
+    def time_init_sorted(self):
+        # Hits the slice fast path in _codes_to_group_indices.
+        self.ds_sorted.groupby("label")
+
+    def time_init_shuffled(self):
+        # Hits the argsort slow path.
+        self.ds_shuffled.groupby("label")
+
+
 # TODO: These don't work now because we are calling `.compute` explicitly.
 class GroupByPandasDataFrame(GroupBy):
     """Run groupby tests using pandas DataFrame."""

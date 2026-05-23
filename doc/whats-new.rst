@@ -42,6 +42,14 @@ Documentation
 Internal Changes
 ~~~~~~~~~~~~~~~~
 
+- Speed up :py:meth:`~xarray.Dataset.groupby` construction by vectorizing
+  ``xarray.core.groupby._codes_to_group_indices``. For monotonic group codes
+  (the common case: ``groupby("time.year")``, sorted-coordinate groupby)
+  groups are returned as slices via a single ``np.searchsorted``, avoiding
+  the per-row Python loop. Speedup is roughly 10–30× on 200k–1M-row datasets
+  with hundreds-to-thousands of groups; unsorted codes fall through to a
+  stable-argsort path with no meaningful regression.
+
 
 .. _whats-new.2026.04.0:
 
