@@ -89,13 +89,46 @@ def check_reduce_dims(reduce_dims, dimensions):
 
 
 def _codes_to_group_indices(codes: np.ndarray, N: int) -> GroupIndices:
-    """Converts integer codes for groups to group indices."""
+    """Converts integer codes for groups to group indices.
+
+    Codes equal to -1 are sentinel values for rows that don't belong to any
+    group (e.g. NaN keys, out-of-bin values) and are dropped from the output.
+    Within each group, row indices appear in their original order.
+
+    Fast path: when codes are non-decreasing (the common case for resample,
+    `groupby("time.year")`, and any groupby on a sorted coordinate) groups
+    are contiguous in the original array, so each group can be returned as
+    a slice with no sort or per-element copy.
+    """
     assert codes.ndim == 1
-    groups: GroupIndices = tuple([] for _ in range(N))
-    for n, g in enumerate(codes):
-        if g >= 0:
-            groups[g].append(n)
-    return groups
+    if codes.size == 0 or N == 0:
+        return tuple([] for _ in range(N))
+
+    # Fast path: codes are globally non-decreasing. -1 sentinels (the minimum)
+    # cluster at the front, so np.searchsorted gives the boundary for each
+    # group directly against the original array.
+    if codes.size < 2 or bool((np.diff(codes) >= 0).all()):
+        boundaries = np.searchsorted(codes, np.arange(N + 1))
+        # Empty groups must be falsy so the caller's `if g` filter works; an
+        # empty slice (e.g. slice(3, 3)) is truthy in Python, so use [] instead.
+        return tuple(
+            slice(int(boundaries[g]), int(boundaries[g + 1]))
+            if boundaries[g + 1] > boundaries[g]
+            else []
+            for g in range(N)
+        )
+
+    # Slow path: unsorted codes. Stable argsort keeps each group's rows in
+    # their original relative order, then we materialize per-group lists.
+    order = np.argsort(codes, kind="stable")
+    sorted_codes = codes[order]
+    first_valid = np.searchsorted(sorted_codes, 0)
+    valid_order = order[first_valid:]
+    valid_codes = sorted_codes[first_valid:]
+    boundaries = np.searchsorted(valid_codes, np.arange(N + 1))
+    return tuple(
+        valid_order[boundaries[g] : boundaries[g + 1]].tolist() for g in range(N)
+    )
 
 
 def _dummy_copy(xarray_obj):
@@ -163,7 +196,8 @@ def _inverse_permutation_indices(positions, N: int | None = None) -> np.ndarray 
     Parameters
     ----------
     positions : list of ndarray or slice
-        If slice objects, all are assumed to be slices.
+        Slices and ndarrays may be mixed; empty groups arrive as ``[]``
+        sentinels from :func:`_codes_to_group_indices` and are dropped here.
 
     Returns
     -------
@@ -172,11 +206,14 @@ def _inverse_permutation_indices(positions, N: int | None = None) -> np.ndarray 
     if not positions:
         return None
 
-    if isinstance(positions[0], slice):
-        positions = _consolidate_slices(positions)
-        if positions == [slice(None)] or positions == [slice(0, None)]:
+    if any(isinstance(p, slice) for p in positions):
+        slice_positions = [p for p in positions if isinstance(p, slice)]
+        slice_positions = _consolidate_slices(slice_positions)
+        if slice_positions == [slice(None)] or slice_positions == [slice(0, None)]:
             return None
-        positions = [np.arange(sl.start, sl.stop, sl.step) for sl in positions]
+        positions = [
+            np.arange(sl.start, sl.stop, sl.step) for sl in slice_positions
+        ]
     newpositions = nputils.inverse_permutation(
         np.concatenate(tuple(p for p in positions if len(p) > 0)), N
     )

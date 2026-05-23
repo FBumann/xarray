@@ -2773,7 +2773,13 @@ def test_groupby_multiindex_level() -> None:
     midx = pd.MultiIndex.from_product([list("abc"), [0, 1]], names=("one", "two"))
     mda = xr.DataArray(np.random.rand(6, 3), [("x", midx), ("y", range(3))])
     groups = mda.groupby("one").groups
-    assert groups == {"a": [0, 1], "b": [2, 3], "c": [4, 5]}
+    # GroupIndex is Union[slice, list[int]]; codes are monotonic here, so the
+    # implementation returns slices. Normalize both sides for comparison.
+    normalized = {
+        k: list(range(v.start, v.stop)) if isinstance(v, slice) else v
+        for k, v in groups.items()
+    }
+    assert normalized == {"a": [0, 1], "b": [2, 3], "c": [4, 5]}
 
 
 @requires_flox
